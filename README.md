@@ -1,4 +1,4 @@
-# omarchy-grok-agent-widget
+# omarchy-agent-widget-extras
 
 Extends Omarchy's `omarchy.agents` bar widget with two things it doesn't
 ship out of the box:
