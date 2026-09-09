@@ -22,6 +22,7 @@ writes straight to the usage directory the panel watches.
 """
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -31,6 +32,23 @@ from pathlib import Path
 AGENT_ID = "grok"
 AGENT_NAME = "Grok"
 AUTH_HELP = "Run `grok login` to authenticate."
+
+# costUsdTicks is Grok's integer money unit. xAI documents neither the scale
+# nor the tier numbering, so both are handled literally: ticks are read as
+# nanodollars because that is the only reading that puts this account's
+# recorded spend at a sane per-token price, and the balance it feeds is always
+# flagged estimated. `tierLabel` in the config file overrides the raw claim
+# when you know the marketing name for your plan.
+TICKS_PER_USD = 1_000_000_000
+
+
+def config_home():
+  return Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+
+
+def read_config():
+  data = read_json(config_home() / "omarchy" / "agents" / "grok.json")
+  return data if isinstance(data, dict) else {}
 
 
 def grok_home():
@@ -99,9 +117,13 @@ def usage_tokens(block):
   if not isinstance(block, dict):
     return None
   tokens = {key: number(block.get(field)) for key, field in GROK_TOKEN_FIELDS}
-  # Grok's totalTokens already covers input + output, and its cache figures are
-  # a subset of input, so summing every field would double-count the cache.
-  tokens["total"] = number(block.get("totalTokens")) or tokens["input"] + tokens["output"]
+  # Grok counts cached reads inside inputTokens; Claude and Codex report them
+  # as a bucket of their own. Subtract so the panel's input/cache hover means
+  # the same thing on every tab - the three still sum to totalTokens.
+  raw_input = tokens["input"]
+  tokens["input"] = max(0, raw_input - tokens["cacheRead"])
+  tokens["total"] = number(block.get("totalTokens")) or raw_input + tokens["output"]
+  tokens["costUsd"] = number(block.get("costUsdTicks")) / TICKS_PER_USD
   return tokens
 
 
@@ -140,7 +162,7 @@ def model_blocks(block):
   return [(model_name(block.get("primaryModelId")), tokens)]
 
 
-def collect_local_stats():
+def collect_local_stats(spend_since=None):
   now = datetime.now()
   today = now.strftime("%Y-%m-%d")
   recent_dates = [(now - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
@@ -154,11 +176,16 @@ def collect_local_stats():
   total_sessions = set()
   active_days = set()
   model_usage = {}
+  spend_usd = 0.0
 
   def record_activity(day, model, tokens, session_key):
-    nonlocal today_total_tokens
+    nonlocal today_total_tokens, spend_usd
     add_tokens(model_usage.setdefault(model, empty_bucket()), tokens)
     active_days.add(day)
+    # Spend is clipped to the funding window so a top-up's funded figure and
+    # the spend charged against it always cover the same period.
+    if spend_since is None or day >= spend_since:
+      spend_usd += tokens["costUsd"]
     if day in recent:
       recent[day]["messageCount"] += tokens["total"]
     if day == today:
@@ -235,6 +262,73 @@ def collect_local_stats():
     "activeDays": len(active_days),
     "activeDates": sorted(active_days),
     "modelUsage": model_usage,
+    "_spendUsd": spend_usd,
+  }
+
+
+def token_claims():
+  """Claims from the stored Grok access token.
+
+  The token is the user's own and is only decoded here - never verified, and
+  never sent anywhere - to read the `tier` claim the hero line needs.
+  """
+  auth = read_json(grok_home() / "auth.json")
+  if not isinstance(auth, dict):
+    return {}
+  for entry in auth.values():
+    if not isinstance(entry, dict):
+      continue
+    token = entry.get("key")
+    if not isinstance(token, str):
+      continue
+    parts = token.split(".")
+    if len(parts) != 3:
+      continue
+    try:
+      padded = parts[1] + "=" * (-len(parts[1]) % 4)
+      claims = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+      continue
+    if isinstance(claims, dict):
+      return claims
+  return {}
+
+
+def tier_label(config):
+  override = config.get("tierLabel")
+  if isinstance(override, str) and override.strip():
+    return override.strip()
+  tier = token_claims().get("tier")
+  if tier is None or isinstance(tier, bool):
+    return ""
+  # xAI publishes no mapping from the numeric claim to a plan name, so show
+  # the number rather than invent a label; `tierLabel` in the config renames it.
+  if isinstance(tier, (int, float)):
+    return "Tier {}".format(int(tier))
+  text = str(tier).strip()
+  return text
+
+
+def balance_block(config, spend_usd):
+  """A budget ledger, only when you declare the budget.
+
+  Grok is a subscription with no prepaid balance to read, so this reports
+  recorded spend against a `fundedAmount` you set in the config file - the
+  same shape the Fireworks collector uses - and nothing at all without one.
+  """
+  try:
+    funded = float(config.get("fundedAmount") or 0)
+  except (TypeError, ValueError):
+    return None
+  if not funded > 0:
+    return None
+  spent = round(max(0.0, spend_usd), 6)
+  return {
+    "remaining": round(max(0.0, funded - spent), 6),
+    "funded": funded,
+    "spent": spent,
+    "currency": str(config.get("currency") or "USD"),
+    "estimated": True,
   }
 
 
@@ -266,9 +360,20 @@ def main():
     "ready": True,
     "hasLocalStats": True,
     "limits": [],
-    "tierLabel": "",
   }
-  record.update(collect_local_stats())
+  config = read_config()
+  record["tierLabel"] = tier_label(config)
+
+  funded_at = config.get("fundedAt")
+  spend_since = local_day(funded_at) if funded_at else None
+  stats = collect_local_stats(spend_since)
+  spend_usd = stats.pop("_spendUsd", 0.0)
+  record.update(stats)
+
+  balance = balance_block(config, spend_usd)
+  if balance:
+    record["balance"] = balance
+
   record.update(auth_status())
   print(json.dumps(record, separators=(",", ":")))
 

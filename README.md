@@ -31,12 +31,48 @@ part of doing that.
 
 ## What each collector reports
 
-**Grok** has no documented rate-limit or plan API reachable from the CLI
-(unlike Anthropic's OAuth usage endpoint or the Codex app-server RPC), so it
-only ever reports **local stats**: sessions and messages found under
-`~/.grok/sessions/**/summary.json`, with token counts from `signals.json`
-when that file has a recognizable shape (its schema isn't publicly
-documented, so it's parsed defensively and falls back to message counts).
+**Grok** reports **local stats** plus a plan tier. Sessions come from
+`~/.grok/sessions/**/summary.json` and tokens from the `usage.json` ledger
+Grok writes beside each one — the data `grok usage <session-id>` prints —
+including the per-model split and a `turns[]` array stamped with end times,
+so each day is credited to the turn that earned it. Sessions written before
+`usage.json` existed fall back to message counts.
+
+Cached reads are reported as their own bucket rather than folded into input
+the way Grok records them, so the panel's input/output/cache hover means the
+same thing on the Grok tab as on the Claude and Codex ones.
+
+`tierLabel` comes from the `tier` claim in the stored OIDC token, decoded
+locally and never sent anywhere. xAI publishes no mapping from that number to
+a plan name, so it shows literally as `Tier 5`; name it yourself with
+`tierLabel` in the config file below.
+
+Rate-limit windows are still unavailable — xAI exposes no quota endpoint or
+RPC, so `limits` stays empty and the panel simply omits that section.
+
+### Optional budget ledger
+
+Grok is a subscription with no prepaid balance to read, but it does record
+real cost per turn. Declare a budget and the tab gains the same fuel-gauge
+meter the prepaid agents use, in `~/.config/omarchy/agents/grok.json`:
+
+```json
+{
+  "fundedAmount": 20,
+  "fundedAt": "2026-09-01",
+  "tierLabel": "SuperGrok Heavy"
+}
+```
+
+`fundedAmount` is your budget for the period starting `fundedAt`; spend
+before that date is not charged against it. Every field is optional — with no
+`fundedAmount` the tab shows token usage and no meter.
+
+The figure is always labelled **estimated**. Grok records cost as an integer
+`costUsdTicks`, and xAI documents neither the unit nor the tier numbering;
+ticks are read as nanodollars because that is the only scale that puts this
+account's recorded spend at a sane per-token price. Check it against a real
+invoice before trusting it to the cent.
 
 **OpenRouter** is the opposite shape: it's a prepaid-credit router across
 many models, not a coding-agent subscription, so there's no local session
@@ -149,12 +185,13 @@ Then edit `~/.config/omarchy/shell.json`'s bar layout, change
 
 ## Known limitations
 
-- **Grok:** no rate-limit / plan-tier data — `limits` is always empty and
-  `tierLabel` is always blank, since there's no API to query for it. Token
-  counts depend on `signals.json`'s undocumented shape; if none of the field
-  names the script tries match, sessions still count toward prompts and
-  active days, just with `0` tokens. Requires the `grok` CLI to be on `PATH`
-  and signed in.
+- **Grok:** no rate-limit windows — `limits` is always empty, since xAI
+  exposes no quota endpoint or RPC. `tierLabel` shows the raw `tier` claim
+  (`Tier 5`) unless you name your plan in the config file. Cost is derived
+  from `costUsdTicks` on an inferred nanodollar scale and is always flagged
+  estimated. Sessions predating Grok's `usage.json` ledger count toward
+  prompts and active days with `0` tokens. Requires the `grok` CLI to be on
+  `PATH` and signed in.
 - **OpenRouter:** no per-model spend breakdown, only the account-wide
   balance — OpenRouter's credits endpoint doesn't split usage by model.
   Requires `OPENROUTER_API_KEY` for the balance tab, and `opencode` (plus
