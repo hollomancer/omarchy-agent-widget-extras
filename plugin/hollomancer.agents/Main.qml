@@ -235,7 +235,10 @@ Item {
       funded: isFinite(funded) && funded > 0 ? funded : 0,
       spent: Math.max(0, Number(raw.spent) || 0),
       currency: String(raw.currency || "USD"),
-      estimated: raw.estimated === true
+      estimated: raw.estimated === true,
+      // Subscriptions have spend but no credit ledger, so they name the row
+      // themselves rather than inheriting the prepaid wording.
+      label: String(raw.label || "")
     }
   }
 

@@ -42,7 +42,10 @@ Panel {
   readonly property var balance: provider ? (provider.balance || null) : null
   // A prepaid account runs low the way a subscription window fills up: the
   // last 10% of the funded credits lights the same alarm.
-  readonly property bool balanceAlarming: !!balance && balance.funded > 0
+  // A funded agent counts down toward empty; one that only records spend has
+  // nothing to run out of, so it shows what it cost and never alarms.
+  readonly property bool balanceHasBudget: !!balance && balance.funded > 0
+  readonly property bool balanceAlarming: balanceHasBudget
     && balance.remaining / balance.funded <= 0.1
   readonly property bool alarming: (!!headline && headline.percent >= 0.9) || balanceAlarming
 
@@ -240,7 +243,8 @@ Panel {
   }
 
   function balanceDetailText(b) {
-    if (!b || !(b.funded > 0)) return ""
+    if (!b) return ""
+    if (!(b.funded > 0)) return b.estimated ? "estimated" : ""
     var text = formatMoney(b.spent, b.currency) + " spent of " + formatMoney(b.funded, b.currency) + " funded"
     if (b.estimated) text += " · estimated"
     return text
@@ -609,7 +613,7 @@ Panel {
 
             PanelSectionHeader {
               width: parent.width
-              text: "BALANCE"
+              text: root.balanceHasBudget ? "BALANCE" : "COST"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -620,7 +624,8 @@ Panel {
 
               Text {
                 id: balanceLabel
-                text: "Prepaid credits"
+                text: root.balance && root.balance.label ? root.balance.label
+                  : (root.balanceHasBudget ? "Prepaid credits" : "Spent")
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -630,7 +635,10 @@ Panel {
 
               Text {
                 id: balanceValue
-                text: root.balance ? root.formatMoney(root.balance.remaining, root.balance.currency) : ""
+                text: root.balance
+                  ? root.formatMoney(root.balanceHasBudget ? root.balance.remaining : root.balance.spent,
+                      root.balance.currency)
+                  : ""
                 color: root.balanceAlarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption

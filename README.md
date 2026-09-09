@@ -52,11 +52,15 @@ file below, which overrides both.
 Rate-limit windows are still unavailable — xAI exposes no quota endpoint or
 RPC, so `limits` stays empty and the panel simply omits that section.
 
-### Optional budget ledger
+### Cost
 
-Grok is a subscription with no prepaid balance to read, but it does record
-real cost per turn. Declare a budget and the tab gains the same fuel-gauge
-meter the prepaid agents use, in `~/.config/omarchy/agents/grok.json`:
+Grok records real cost per turn, so the tab shows a **COST** row with what
+you have spent - no configuration, no API key. Grok is a subscription with no
+credit ledger to read, so there is nothing to drain and no meter.
+
+Declaring a budget turns that row into the same fuel gauge the prepaid agents
+use - funded, remaining, and a bar that drains toward empty - in
+`~/.config/omarchy/agents/grok.json`:
 
 ```json
 {
@@ -67,8 +71,10 @@ meter the prepaid agents use, in `~/.config/omarchy/agents/grok.json`:
 ```
 
 `fundedAmount` is your budget for the period starting `fundedAt`; spend
-before that date is not charged against it. Every field is optional — with no
-`fundedAmount` the tab shows token usage and no meter.
+before that date is not charged against it, and the row relabels itself to
+say which period it covers. `balanceLabel` renames the row outright. Every
+field is optional — with no `fundedAmount` you still get the spend figure,
+just no meter to drain.
 
 Grok records cost as an integer `costUsdTicks` and xAI documents the unit
 nowhere, so it is read as nanodollars (1e9 ticks = $1). That reading checks
