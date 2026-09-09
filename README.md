@@ -70,11 +70,19 @@ meter the prepaid agents use, in `~/.config/omarchy/agents/grok.json`:
 before that date is not charged against it. Every field is optional — with no
 `fundedAmount` the tab shows token usage and no meter.
 
-The figure is always labelled **estimated**. Grok records cost as an integer
-`costUsdTicks`, and xAI documents neither the unit nor the tier numbering;
-ticks are read as nanodollars because that is the only scale that puts this
-account's recorded spend at a sane per-token price. Check it against a real
-invoice before trusting it to the cent.
+Grok records cost as an integer `costUsdTicks` and xAI documents the unit
+nowhere, so it is read as nanodollars (1e9 ticks = $1). That reading checks
+out against published pricing: a recorded session of 13,119 uncached input,
+640 cached input and 44 output tokens costs $0.026822 at grok-4.6's list
+rates of $2.00 / $0.50 / $6.00 per million, and the ledger recorded
+45,597,400 ticks - exactly 1.700000x that, to the tick. A scale of 1.7e9
+ticks per dollar would be a strange unit to pick; nanodollars against a
+model billed at 1.7x base rates is the reading that makes sense, and the
+session ran on `grok-4.6-build` rather than plain `grok-4.6`.
+
+The figure is still labelled **estimated**, because that inference rests on
+one session and one model variant. Check it against a real invoice before
+trusting it to the cent.
 
 **OpenRouter** is the opposite shape: it's a prepaid-credit router across
 many models, not a coding-agent subscription, so there's no local session
