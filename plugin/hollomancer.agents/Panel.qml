@@ -242,10 +242,13 @@ Panel {
     return currencyPrefix(currency) + amount.toFixed(2)
   }
 
+  // With a budget the detail line is funded-versus-spent; without one it
+  // carries the running total the headline no longer shows.
   function balanceDetailText(b) {
     if (!b) return ""
-    if (!(b.funded > 0)) return b.estimated ? "estimated" : ""
-    var text = formatMoney(b.spent, b.currency) + " spent of " + formatMoney(b.funded, b.currency) + " funded"
+    var text = b.funded > 0
+      ? formatMoney(b.spent, b.currency) + " spent of " + formatMoney(b.funded, b.currency) + " funded"
+      : formatMoney(b.spent, b.currency) + " " + (b.periodLabel || "all time")
     if (b.estimated) text += " · estimated"
     return text
   }
@@ -636,7 +639,7 @@ Panel {
               Text {
                 id: balanceValue
                 text: root.balance
-                  ? root.formatMoney(root.balanceHasBudget ? root.balance.remaining : root.balance.spent,
+                  ? root.formatMoney(root.balanceHasBudget ? root.balance.remaining : root.balance.spentToday,
                       root.balance.currency)
                   : ""
                 color: root.balanceAlarming ? root.urgent : root.foreground

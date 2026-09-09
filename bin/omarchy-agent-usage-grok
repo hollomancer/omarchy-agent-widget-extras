@@ -185,15 +185,18 @@ def collect_local_stats(spend_since=None):
   active_days = set()
   model_usage = {}
   spend_usd = 0.0
+  spend_today_usd = 0.0
 
   def record_activity(day, model, tokens, session_key):
-    nonlocal today_total_tokens, spend_usd
+    nonlocal today_total_tokens, spend_usd, spend_today_usd
     add_tokens(model_usage.setdefault(model, empty_bucket()), tokens)
     active_days.add(day)
     # Spend is clipped to the funding window so a top-up's funded figure and
     # the spend charged against it always cover the same period.
     if spend_since is None or day >= spend_since:
       spend_usd += tokens["costUsd"]
+    if day == today:
+      spend_today_usd += tokens["costUsd"]
     if day in recent:
       recent[day]["messageCount"] += tokens["total"]
     if day == today:
@@ -271,6 +274,7 @@ def collect_local_stats(spend_since=None):
     "activeDates": sorted(active_days),
     "modelUsage": model_usage,
     "_spendUsd": spend_usd,
+    "_spendTodayUsd": spend_today_usd,
   }
 
 
@@ -316,7 +320,7 @@ def tier_label(config):
   return text
 
 
-def balance_block(config, spend_usd, spend_since):
+def balance_block(config, spend_usd, spend_today_usd, spend_since):
   """What Grok cost, plus a budget meter when you declare one.
 
   Grok is a subscription with no credit ledger to read, so the money section
@@ -330,17 +334,15 @@ def balance_block(config, spend_usd, spend_since):
     funded = 0.0
   funded = max(0.0, funded)
   spent = round(max(0.0, spend_usd), 6)
+  spent_today = round(max(0.0, spend_today_usd), 6)
   if funded <= 0 and spent <= 0:
     return None
 
   label = config.get("balanceLabel")
   if not (isinstance(label, str) and label.strip()):
-    if funded > 0:
-      label = "Budget remaining"
-    elif spend_since:
-      label = "Spent since {}".format(spend_since)
-    else:
-      label = "Spent, all time"
+    # A budget is a running total by nature; without one the useful figure is
+    # today's, matching every other number on the panel.
+    label = "Budget remaining" if funded > 0 else "Spent today"
 
   return {
     "remaining": round(max(0.0, funded - spent), 6) if funded > 0 else 0.0,
@@ -349,6 +351,8 @@ def balance_block(config, spend_usd, spend_since):
     "currency": str(config.get("currency") or "USD"),
     "estimated": True,
     "label": label.strip(),
+    "spentToday": spent_today,
+    "periodLabel": "since {}".format(spend_since) if spend_since else "all time",
   }
 
 
@@ -388,9 +392,10 @@ def main():
   spend_since = local_day(funded_at) if funded_at else None
   stats = collect_local_stats(spend_since)
   spend_usd = stats.pop("_spendUsd", 0.0)
+  spend_today_usd = stats.pop("_spendTodayUsd", 0.0)
   record.update(stats)
 
-  balance = balance_block(config, spend_usd, spend_since)
+  balance = balance_block(config, spend_usd, spend_today_usd, spend_since)
   if balance:
     record["balance"] = balance
 

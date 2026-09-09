@@ -55,8 +55,15 @@ RPC, so `limits` stays empty and the panel simply omits that section.
 ### Cost
 
 Grok records real cost per turn, so the tab shows a **COST** row with what
-you have spent - no configuration, no API key. Grok is a subscription with no
-credit ledger to read, so there is nothing to drain and no meter.
+today cost - no configuration, no API key - and carries the running total on
+the line beneath it. Today leads because every other figure on the panel is
+today's; a lifetime total only ever grows and says nothing about whether this
+session was expensive. Grok is a subscription with no credit ledger to read,
+so there is nothing to drain and no meter.
+
+This row also fills the space the **Limits** section occupies on the Claude
+and Codex tabs, which stays empty here because xAI exposes no quota endpoint
+to read allowance windows from.
 
 Declaring a budget turns that row into the same fuel gauge the prepaid agents
 use - funded, remaining, and a bar that drains toward empty - in

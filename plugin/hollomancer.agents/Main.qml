@@ -237,8 +237,11 @@ Item {
       currency: String(raw.currency || "USD"),
       estimated: raw.estimated === true,
       // Subscriptions have spend but no credit ledger, so they name the row
-      // themselves rather than inheriting the prepaid wording.
-      label: String(raw.label || "")
+      // themselves rather than inheriting the prepaid wording, and lead with
+      // today's spend the way every other figure on the panel does.
+      label: String(raw.label || ""),
+      spentToday: Math.max(0, Number(raw.spentToday) || 0),
+      periodLabel: String(raw.periodLabel || "")
     }
   }
 
