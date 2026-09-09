@@ -218,6 +218,9 @@ Then edit `~/.config/omarchy/shell.json`'s bar layout, change
   `PATH` and signed in.
 - **OpenRouter:** no per-model spend breakdown, only the account-wide
   balance — OpenRouter's credits endpoint doesn't split usage by model.
+  `tierLabel` reads "Prepaid" (the shape of the account, not a plan), and the
+  bundled mark is a routing glyph rather than OpenRouter's brand asset —
+  drop a real `assets/openrouter.svg` over it if you have one.
   Requires `OPENROUTER_API_KEY` for the balance tab, and `opencode` (plus
   its own OpenRouter auth) to actually launch a picked model.
 - The plugin clone in `plugin/hollomancer.agents/` is a full copy of

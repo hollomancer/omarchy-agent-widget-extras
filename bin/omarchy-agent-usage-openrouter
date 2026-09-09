@@ -120,7 +120,9 @@ def main():
     "hasLocalStats": False,
     "hasPromptStats": False,
     "limits": [],
-    "tierLabel": "",
+    # OpenRouter sells credit, not a plan, so the hero names the shape of the
+    # account the way the Fireworks collector does rather than sitting blank.
+    "tierLabel": "Prepaid",
   }
   record.update(fetch_balance())
   print(json.dumps(record, separators=(",", ":")))
