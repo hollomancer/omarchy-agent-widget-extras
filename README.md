@@ -44,8 +44,10 @@ same thing on the Grok tab as on the Claude and Codex ones.
 
 `tierLabel` comes from the `tier` claim in the stored OIDC token, decoded
 locally and never sent anywhere. xAI publishes no mapping from that number to
-a plan name, so it shows literally as `Tier 5`; name it yourself with
-`tierLabel` in the config file below.
+a plan name, so the collector carries only values confirmed against a real
+account — `5` is SuperGrok Heavy. Any other value renders as `Tier N` rather
+than guessing at the ladder; name it yourself with `tierLabel` in the config
+file below, which overrides both.
 
 Rate-limit windows are still unavailable — xAI exposes no quota endpoint or
 RPC, so `limits` stays empty and the panel simply omits that section.
@@ -186,8 +188,9 @@ Then edit `~/.config/omarchy/shell.json`'s bar layout, change
 ## Known limitations
 
 - **Grok:** no rate-limit windows — `limits` is always empty, since xAI
-  exposes no quota endpoint or RPC. `tierLabel` shows the raw `tier` claim
-  (`Tier 5`) unless you name your plan in the config file. Cost is derived
+  exposes no quota endpoint or RPC. `tierLabel` resolves the `tier` claim
+  through a small table of confirmed values and otherwise shows `Tier N`;
+  name your plan in the config file to override it. Cost is derived
   from `costUsdTicks` on an inferred nanodollar scale and is always flagged
   estimated. Sessions predating Grok's `usage.json` ledger count toward
   prompts and active days with `0` tokens. Requires the `grok` CLI to be on

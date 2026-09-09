@@ -41,6 +41,14 @@ AUTH_HELP = "Run `grok login` to authenticate."
 # when you know the marketing name for your plan.
 TICKS_PER_USD = 1_000_000_000
 
+# xAI documents no mapping from the numeric `tier` claim to a plan name, so
+# this holds only values confirmed against a real account. Anything absent
+# renders as "Tier N" rather than guessing at the ladder, and `tierLabel` in
+# the config file overrides both.
+TIER_NAMES = {
+  5: "SuperGrok Heavy",
+}
+
 
 def config_home():
   return Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
@@ -301,10 +309,9 @@ def tier_label(config):
   tier = token_claims().get("tier")
   if tier is None or isinstance(tier, bool):
     return ""
-  # xAI publishes no mapping from the numeric claim to a plan name, so show
-  # the number rather than invent a label; `tierLabel` in the config renames it.
   if isinstance(tier, (int, float)):
-    return "Tier {}".format(int(tier))
+    level = int(tier)
+    return TIER_NAMES.get(level) or "Tier {}".format(level)
   text = str(tier).strip()
   return text
 
