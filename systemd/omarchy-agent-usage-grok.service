@@ -1,0 +1,14 @@
+[Unit]
+Description=Regenerate the Grok usage record for the Omarchy agents widget
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '\
+  dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"; \
+  mkdir -p "$dir"; \
+  tmp=$(mktemp "$dir/.grok.XXXXXX"); \
+  if "$HOME/.local/bin/omarchy-agent-usage-grok" > "$tmp"; then \
+    mv "$tmp" "$dir/grok.json"; \
+  else \
+    rm -f "$tmp"; \
+  fi'

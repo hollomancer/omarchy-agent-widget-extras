@@ -1,0 +1,222 @@
+#!/usr/bin/python3
+# omarchy:summary=Print the Grok CLI usage record as JSON
+# omarchy:args=[--force] [--limits-only]
+"""Collect Grok CLI (xai/grok) usage into one display-ready JSON record,
+matching the schema Omarchy's omarchy.agents bar widget expects.
+
+Unlike Claude Code and Codex, Grok has no documented rate-limit/plan RPC or
+endpoint reachable from the CLI, so this collector only ever reports local
+stats: it walks ~/.grok/sessions/<encoded-cwd>/<session-id>/summary.json for
+message/session counts and, when present, signals.json for token counts.
+signals.json's schema isn't publicly documented, so its fields are read
+defensively and message counts stand in wherever token counts are missing.
+
+--force and --limits-only are accepted for compatibility with Omarchy's
+collector-invocation contract but change nothing here: there is no remote
+call to skip or force a refresh of.
+
+This script is not part of Omarchy's own package (there is no first-party
+Grok collector), so nothing dispatches it automatically. Install it with
+install.sh, which also sets up a systemd --user timer that runs it and
+writes straight to the usage directory the panel watches.
+"""
+
+import argparse
+import json
+import os
+import shutil
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+AGENT_ID = "grok"
+AGENT_NAME = "Grok"
+AUTH_HELP = "Run `grok login` to authenticate."
+
+
+def grok_home():
+  return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok"))
+
+
+def find_command(name):
+  return shutil.which(name)
+
+
+def number(value):
+  try:
+    return int(value or 0)
+  except Exception:
+    return 0
+
+
+def local_day(value):
+  if value is None:
+    return datetime.now().strftime("%Y-%m-%d")
+  if isinstance(value, (int, float)):
+    seconds = value / 1000 if value > 10_000_000_000 else value
+    try:
+      return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d")
+    except Exception:
+      return datetime.now().strftime("%Y-%m-%d")
+  text = str(value)
+  try:
+    if text.endswith("Z"):
+      dt = datetime.fromisoformat(text[:-1] + "+00:00")
+    else:
+      dt = datetime.fromisoformat(text)
+    if dt.tzinfo is not None:
+      dt = dt.astimezone()
+    return dt.strftime("%Y-%m-%d")
+  except Exception:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def model_name(raw):
+  value = str(raw or "grok")
+  return value if value else "grok"
+
+
+def read_json(path):
+  try:
+    return json.loads(path.read_text(encoding="utf-8"))
+  except Exception:
+    return None
+
+
+# signals.json's real field names are undocumented; try the common shapes a
+# token-usage block might use and fall back to zeros rather than guessing.
+def extract_tokens(signals):
+  if not isinstance(signals, dict):
+    return {"input": 0, "output": 0, "cacheRead": 0, "cacheCreation": 0}
+
+  usage = None
+  for key in ("token_usage", "tokenUsage", "tokens", "usage"):
+    candidate = signals.get(key)
+    if isinstance(candidate, dict):
+      usage = candidate
+      break
+  if usage is None:
+    usage = signals
+
+  def pick(*names):
+    for name in names:
+      if name in usage:
+        return number(usage.get(name))
+    return 0
+
+  return {
+    "input": pick("input_tokens", "inputTokens", "prompt_tokens", "promptTokens"),
+    "output": pick("output_tokens", "outputTokens", "completion_tokens", "completionTokens"),
+    "cacheRead": pick("cache_read_tokens", "cacheReadTokens", "cache_read_input_tokens", "cacheReadInputTokens"),
+    "cacheCreation": pick("cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens"),
+  }
+
+
+def collect_local_stats():
+  now = datetime.now()
+  today = now.strftime("%Y-%m-%d")
+  recent_dates = [(now - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
+  recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
+
+  today_prompts = 0
+  today_sessions = set()
+  today_total_tokens = 0
+  today_tokens_by_model = {}
+  total_prompts = 0
+  total_sessions = set()
+  active_days = set()
+  model_usage = {}
+
+  sessions_root = grok_home() / "sessions"
+  if sessions_root.is_dir():
+    for summary_path in sessions_root.glob("*/*/summary.json"):
+      session_dir = summary_path.parent
+      summary = read_json(summary_path)
+      if not isinstance(summary, dict):
+        continue
+
+      info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
+      when = summary.get("updated_at") or summary.get("created_at") or info.get("updated_at")
+      day = local_day(when)
+      model = model_name(summary.get("current_model_id"))
+      messages = number(summary.get("num_chat_messages") or summary.get("num_messages"))
+      prompts = messages if messages else 1
+
+      tokens = extract_tokens(read_json(session_dir / "signals.json"))
+      total_tokens = tokens["input"] + tokens["output"] + tokens["cacheRead"] + tokens["cacheCreation"]
+      activity = total_tokens if total_tokens else messages
+
+      total_prompts += prompts
+      total_sessions.add(str(session_dir))
+      active_days.add(day)
+
+      bucket = model_usage.setdefault(model, {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+      })
+      bucket["inputTokens"] += tokens["input"]
+      bucket["outputTokens"] += tokens["output"]
+      bucket["cacheReadInputTokens"] += tokens["cacheRead"]
+      bucket["cacheCreationInputTokens"] += tokens["cacheCreation"]
+
+      if day in recent:
+        recent[day]["messageCount"] += activity
+
+      if day == today:
+        today_prompts += prompts
+        today_sessions.add(str(session_dir))
+        today_total_tokens += activity
+        today_tokens_by_model[model] = today_tokens_by_model.get(model, 0) + activity
+
+  return {
+    "todayPrompts": today_prompts,
+    "todaySessions": len(today_sessions),
+    "todayTotalTokens": today_total_tokens,
+    "todayTokensByModel": today_tokens_by_model,
+    "recentDays": [recent[day] for day in recent_dates],
+    "totalPrompts": total_prompts,
+    "totalSessions": len(total_sessions),
+    "activeDays": len(active_days),
+    "activeDates": sorted(active_days),
+    "modelUsage": model_usage,
+  }
+
+
+def auth_status():
+  if not find_command("grok"):
+    return {"usageStatusText": "Grok unavailable", "authHelpText": "grok not found in PATH"}
+
+  signed_in = (grok_home() / "auth.json").exists() or bool(os.environ.get("XAI_API_KEY"))
+  if not signed_in:
+    return {"usageStatusText": "Grok usage unavailable", "authHelpText": AUTH_HELP}
+
+  # No known endpoint for plan/rate-limit data, so there is nothing to
+  # report here beyond local stats - leave both blank rather than invent a
+  # status.
+  return {"usageStatusText": "", "authHelpText": ""}
+
+
+def main():
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  parser.parse_args()
+
+  record = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "ready": True,
+    "hasLocalStats": True,
+    "limits": [],
+    "tierLabel": "",
+  }
+  record.update(collect_local_stats())
+  record.update(auth_status())
+  print(json.dumps(record, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+  main()
