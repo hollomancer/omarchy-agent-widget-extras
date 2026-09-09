@@ -1,0 +1,34 @@
+#!/bin/bash
+set -euo pipefail
+
+# Reads the model the agents panel's OpenRouter picker persisted and starts
+# opencode against it. No arguments: the panel writes the selection to disk
+# rather than passing it through a hand-assembled shell command string, so
+# there's nothing here to quote or inject.
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents"
+state_file="$state_dir/openrouter-selected-model.json"
+
+if [[ ! -f $state_file ]]; then
+  echo "No OpenRouter model selected. Pick one from the Agents panel first." >&2
+  exit 1
+fi
+
+model=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('id', ''))
+except Exception:
+    pass
+" "$state_file")
+
+if [[ -z $model ]]; then
+  echo "No OpenRouter model selected. Pick one from the Agents panel first." >&2
+  exit 1
+fi
+
+[[ $PWD == "$HOME" && -d $HOME/Work ]] && cd "$HOME/Work"
+
+# Same terminal-launch convention omarchy-agent uses for its other agents:
+# a shared app-id so window rules and themes single out every agent window.
+exec omarchy-launch-tui --app-id=org.omarchy.agent opencode -m "openrouter/$model" --auto

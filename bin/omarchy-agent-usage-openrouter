@@ -1,0 +1,130 @@
+#!/usr/bin/python3
+# omarchy:summary=Print the OpenRouter usage record as JSON, and refresh its model cache
+# omarchy:args=[--force] [--limits-only]
+"""Collect OpenRouter balance into one display-ready JSON record, and
+refresh the model catalog the agents panel's OpenRouter model picker reads.
+
+OpenRouter is a prepaid-credit router across many models, not a coding-agent
+subscription, so there is no plan tier or session/weekly rate-limit window
+to report - only a credit balance, the same shape Fireworks' collector
+already uses (record.balance: remaining/funded/spent/currency).
+
+Auth is an API key (OPENROUTER_API_KEY), not a CLI login, so there's no
+local session history to scan the way Claude/Codex/Grok collectors do.
+
+--force and --limits-only are accepted for compatibility with Omarchy's
+collector-invocation contract; both runs always hit the live API since
+there's no local scan to skip.
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+AGENT_ID = "openrouter"
+AGENT_NAME = "OpenRouter"
+AUTH_HELP = "Set OPENROUTER_API_KEY (from https://openrouter.ai/keys) to authenticate."
+CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+MODELS_URL = "https://openrouter.ai/api/v1/models"
+REQUEST_TIMEOUT = 8
+
+
+def cache_dir():
+  root = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "omarchy" / "agent-usage"
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def api_key():
+  return os.environ.get("OPENROUTER_API_KEY") or ""
+
+
+def fetch_json(url, key=None):
+  req = urllib.request.Request(url)
+  if key:
+    req.add_header("Authorization", "Bearer " + key)
+  with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+    return json.loads(resp.read().decode("utf-8"))
+
+
+def write_json_atomic(path, payload):
+  tmp = path.with_suffix(path.suffix + ".tmp")
+  tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+  tmp.replace(path)
+
+
+def refresh_model_cache():
+  try:
+    data = fetch_json(MODELS_URL).get("data", [])
+  except Exception:
+    return
+  rows = []
+  for model in data:
+    pricing = model.get("pricing") or {}
+    rows.append({
+      "id": model.get("id"),
+      "name": model.get("name") or model.get("id"),
+      "contextLength": model.get("context_length"),
+      "promptPrice": pricing.get("prompt"),
+      "completionPrice": pricing.get("completion"),
+    })
+  rows.sort(key=lambda r: (r["name"] or "").lower())
+  write_json_atomic(cache_dir() / "openrouter-models.json", rows)
+
+
+def fetch_balance():
+  key = api_key()
+  if not key:
+    return {"balance": None, "usageStatusText": "OpenRouter usage unavailable", "authHelpText": AUTH_HELP}
+
+  try:
+    credits = fetch_json(CREDITS_URL, key).get("data", {})
+  except urllib.error.HTTPError as exc:
+    if exc.code == 401:
+      return {"balance": None, "usageStatusText": "OpenRouter usage unavailable", "authHelpText": AUTH_HELP}
+    return {"balance": None, "usageStatusText": "OpenRouter unavailable", "authHelpText": f"HTTP {exc.code} from OpenRouter"}
+  except Exception as exc:
+    return {"balance": None, "usageStatusText": "OpenRouter unavailable", "authHelpText": str(exc)}
+
+  funded = float(credits.get("total_credits") or 0)
+  spent = float(credits.get("total_usage") or 0)
+  balance = {
+    "remaining": max(0.0, funded - spent),
+    "funded": funded,
+    "spent": spent,
+    "currency": "USD",
+    "estimated": False,
+  }
+  return {"balance": balance, "usageStatusText": "", "authHelpText": ""}
+
+
+def main():
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  parser.parse_args()
+
+  refresh_model_cache()
+
+  record = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "ready": True,
+    "hasLocalStats": False,
+    "hasPromptStats": False,
+    "limits": [],
+    "tierLabel": "",
+  }
+  record.update(fetch_balance())
+  print(json.dumps(record, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+  main()
