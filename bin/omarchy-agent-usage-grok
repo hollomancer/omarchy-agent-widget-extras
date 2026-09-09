@@ -7,9 +7,9 @@ matching the schema Omarchy's omarchy.agents bar widget expects.
 Unlike Claude Code and Codex, Grok has no documented rate-limit/plan RPC or
 endpoint reachable from the CLI, so this collector only ever reports local
 stats: it walks ~/.grok/sessions/<encoded-cwd>/<session-id>/summary.json for
-message/session counts and, when present, signals.json for token counts.
-signals.json's schema isn't publicly documented, so its fields are read
-defensively and message counts stand in wherever token counts are missing.
+session/turn counts and usage.json - Grok's own persisted token ledger, the
+same data `grok usage <session-id>` prints - for tokens, per-model splits and
+per-turn timestamps. Sessions predating usage.json fall back to message counts.
 
 --force and --limits-only are accepted for compatibility with Omarchy's
 collector-invocation contract but change nothing here: there is no remote
@@ -82,33 +82,62 @@ def read_json(path):
     return None
 
 
-# signals.json's real field names are undocumented; try the common shapes a
-# token-usage block might use and fall back to zeros rather than guessing.
-def extract_tokens(signals):
-  if not isinstance(signals, dict):
-    return {"input": 0, "output": 0, "cacheRead": 0, "cacheCreation": 0}
+# Grok keeps its own token ledger beside each session in usage.json - the same
+# data `grok usage <session-id>` prints. It carries the per-model split and a
+# turns[] array stamped with end times, so tokens are read from there and each
+# day is credited to the turn that earned it. signals.json, which this used to
+# read, records latency and tool telemetry but carries no token counts at all.
+GROK_TOKEN_FIELDS = (
+  ("input", "inputTokens"),
+  ("output", "outputTokens"),
+  ("cacheRead", "cachedReadTokens"),
+  ("cacheCreation", "cacheCreationTokens"),
+)
 
-  usage = None
-  for key in ("token_usage", "tokenUsage", "tokens", "usage"):
-    candidate = signals.get(key)
-    if isinstance(candidate, dict):
-      usage = candidate
-      break
-  if usage is None:
-    usage = signals
 
-  def pick(*names):
-    for name in names:
-      if name in usage:
-        return number(usage.get(name))
-    return 0
+def usage_tokens(block):
+  if not isinstance(block, dict):
+    return None
+  tokens = {key: number(block.get(field)) for key, field in GROK_TOKEN_FIELDS}
+  # Grok's totalTokens already covers input + output, and its cache figures are
+  # a subset of input, so summing every field would double-count the cache.
+  tokens["total"] = number(block.get("totalTokens")) or tokens["input"] + tokens["output"]
+  return tokens
 
+
+def empty_bucket():
   return {
-    "input": pick("input_tokens", "inputTokens", "prompt_tokens", "promptTokens"),
-    "output": pick("output_tokens", "outputTokens", "completion_tokens", "completionTokens"),
-    "cacheRead": pick("cache_read_tokens", "cacheReadTokens", "cache_read_input_tokens", "cacheReadInputTokens"),
-    "cacheCreation": pick("cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens"),
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
   }
+
+
+def add_tokens(bucket, tokens):
+  bucket["inputTokens"] += tokens["input"]
+  bucket["outputTokens"] += tokens["output"]
+  bucket["cacheReadInputTokens"] += tokens["cacheRead"]
+  bucket["cacheCreationInputTokens"] += tokens["cacheCreation"]
+
+
+def model_blocks(block):
+  """Per-model usage where Grok recorded it, else the block's own totals."""
+  if not isinstance(block, dict):
+    return []
+  per_model = block.get("modelUsage")
+  if isinstance(per_model, dict) and per_model:
+    pairs = []
+    for raw_model, model_block in per_model.items():
+      tokens = usage_tokens(model_block)
+      if tokens:
+        pairs.append((model_name(raw_model), tokens))
+    if pairs:
+      return pairs
+  tokens = usage_tokens(block)
+  if tokens is None:
+    return []
+  return [(model_name(block.get("primaryModelId")), tokens)]
 
 
 def collect_local_stats():
@@ -126,6 +155,17 @@ def collect_local_stats():
   active_days = set()
   model_usage = {}
 
+  def record_activity(day, model, tokens, session_key):
+    nonlocal today_total_tokens
+    add_tokens(model_usage.setdefault(model, empty_bucket()), tokens)
+    active_days.add(day)
+    if day in recent:
+      recent[day]["messageCount"] += tokens["total"]
+    if day == today:
+      today_total_tokens += tokens["total"]
+      today_tokens_by_model[model] = today_tokens_by_model.get(model, 0) + tokens["total"]
+      today_sessions.add(session_key)
+
   sessions_root = grok_home() / "sessions"
   if sessions_root.is_dir():
     for summary_path in sessions_root.glob("*/*/summary.json"):
@@ -134,40 +174,55 @@ def collect_local_stats():
       if not isinstance(summary, dict):
         continue
 
+      session_key = str(session_dir)
       info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
       when = summary.get("updated_at") or summary.get("created_at") or info.get("updated_at")
-      day = local_day(when)
-      model = model_name(summary.get("current_model_id"))
-      messages = number(summary.get("num_chat_messages") or summary.get("num_messages"))
-      prompts = messages if messages else 1
+      session_day = local_day(when)
 
-      tokens = extract_tokens(read_json(session_dir / "signals.json"))
-      total_tokens = tokens["input"] + tokens["output"] + tokens["cacheRead"] + tokens["cacheCreation"]
-      activity = total_tokens if total_tokens else messages
+      usage = read_json(session_dir / "usage.json")
+      session_block = usage.get("session") if isinstance(usage, dict) else None
+      turns = usage.get("turns") if isinstance(usage, dict) else None
+      turn_list = [turn for turn in (turns or []) if isinstance(turn, dict)]
 
-      total_prompts += prompts
-      total_sessions.add(str(session_dir))
-      active_days.add(day)
+      total_sessions.add(session_key)
+      active_days.add(session_day)
 
-      bucket = model_usage.setdefault(model, {
-        "inputTokens": 0,
-        "outputTokens": 0,
-        "cacheReadInputTokens": 0,
-        "cacheCreationInputTokens": 0,
-      })
-      bucket["inputTokens"] += tokens["input"]
-      bucket["outputTokens"] += tokens["output"]
-      bucket["cacheReadInputTokens"] += tokens["cacheRead"]
-      bucket["cacheCreationInputTokens"] += tokens["cacheCreation"]
-
-      if day in recent:
-        recent[day]["messageCount"] += activity
-
-      if day == today:
-        today_prompts += prompts
-        today_sessions.add(str(session_dir))
-        today_total_tokens += activity
-        today_tokens_by_model[model] = today_tokens_by_model.get(model, 0) + activity
+      if isinstance(session_block, dict) and turn_list:
+        # A turn is one prompt-and-response exchange, which is what the panel's
+        # hover count means. num_chat_messages counts system and tool messages
+        # too and inflates the same session several times over.
+        for turn in turn_list:
+          turn_day = local_day(turn.get("endedAt") or when)
+          for model, tokens in model_blocks(turn):
+            record_activity(turn_day, model, tokens, session_key)
+          total_prompts += 1
+          if turn_day == today:
+            today_prompts += 1
+            today_sessions.add(session_key)
+      elif isinstance(session_block, dict):
+        prompts = number(session_block.get("turnCount")) or 1
+        for model, tokens in model_blocks(session_block):
+          record_activity(session_day, model, tokens, session_key)
+        total_prompts += prompts
+        if session_day == today:
+          today_prompts += prompts
+          today_sessions.add(session_key)
+      else:
+        # Sessions written before Grok kept a usage.json have no token record;
+        # count their messages so they still register as activity instead of
+        # disappearing from the week.
+        messages = number(summary.get("num_chat_messages") or summary.get("num_messages"))
+        model = model_name(summary.get("current_model_id"))
+        model_usage.setdefault(model, empty_bucket())
+        prompts = messages or 1
+        if session_day in recent:
+          recent[session_day]["messageCount"] += messages
+        total_prompts += prompts
+        if session_day == today:
+          today_prompts += prompts
+          today_total_tokens += messages
+          today_tokens_by_model[model] = today_tokens_by_model.get(model, 0) + messages
+          today_sessions.add(session_key)
 
   return {
     "todayPrompts": today_prompts,
