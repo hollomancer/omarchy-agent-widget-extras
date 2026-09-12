@@ -14,7 +14,11 @@ echo "$out" | jq -e . >/dev/null 2>&1 && { echo "  PASS  valid JSON"; pass=$((pa
 
 # ground truth from grok's own ledger
 gt=$(find /home/omarchy/.grok/sessions -name usage.json 2>/dev/null | xargs -r jq -s '[.[].session]|{tok:(map(.totalTokens)|add),inp:(map(.inputTokens)|add),out:(map(.outputTokens)|add),cr:(map(.cachedReadTokens)|add),ticks:(map(.costUsdTicks)|add),turns:(map(.turnCount)|add)}')
-ck "tokens match ledger"  "$(echo "$out"|jq '.todayTotalTokens')" "$(echo "$gt"|jq '.tok')"
+# NOT todayTotalTokens against gt.tok: gt sums the ledger across every day,
+# todayTotalTokens is scoped to today, and those only happen to match on the
+# day the only real session ran. That coincidence breaks the day after -
+# lines 22-23 already validate the lifetime total correctly (modelUsage
+# reconstructs gt.tok exactly, with the right scope on both sides).
 ck "prompts == turns"     "$(echo "$out"|jq '.totalPrompts')"     "$(echo "$gt"|jq '.turns')"
 ck "cost == ticks/1e9"    "$(echo "$out"|jq '.balance.spent')"    "$(echo "$gt"|jq '(.ticks/1e9*1000000|round)/1000000')"
 ck "tierLabel"            "$(echo "$out"|jq -r '.tierLabel')"     "SuperGrok Heavy"
@@ -63,7 +67,12 @@ ck "balance not estimated" "$(echo "$o"|jq '.balance.estimated')" "false"
 ckn "balance remaining" "$(echo "$o"|jq '.balance.remaining')"
 ck "funded>spent consistent" "$(echo "$o"|jq '((.balance.funded - .balance.spent - .balance.remaining)|fabs) < 0.01')" "true"
 ckn "model catalog cached" "$(jq 'if type=="array" then length else (.data|length) end' ~/.cache/omarchy/agent-usage/openrouter-models.json 2>/dev/null)"
-"$REPO/bin/omarchy-agent-launch-openrouter" >/dev/null 2>&1; ck "launcher errors w/o selection" "$?" "1"
+# Isolated XDG_STATE_HOME: a real persisted selection (the normal state
+# after actually using the picker) would otherwise make this actually launch
+# a terminal + opencode session and hang the suite instead of failing fast.
+L=$(mktemp -d)
+XDG_STATE_HOME="$L" "$REPO/bin/omarchy-agent-launch-openrouter" >/dev/null 2>&1; ck "launcher errors w/o selection" "$?" "1"
+rm -rf "$L"
 
 echo "== 5. PLUGIN ASSETS =="
 A=/home/omarchy/.config/omarchy/plugins/hollomancer.agents/assets

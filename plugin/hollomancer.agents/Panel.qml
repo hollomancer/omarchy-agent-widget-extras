@@ -81,6 +81,19 @@ Panel {
     openRouterSelectedFile.setText(JSON.stringify({ id: id, name: name }) + "\n")
   }
 
+  // Prices arrive as USD-per-token strings straight from OpenRouter's API;
+  // scaled to per-million they land in a readable $0.xx-$xx range instead of
+  // a string of leading zeros.
+  function openRouterPriceText(model) {
+    if (!model) return ""
+    var prompt = Number(model.promptPrice)
+    var completion = Number(model.completionPrice)
+    if (!isFinite(prompt)) prompt = 0
+    if (!isFinite(completion)) completion = 0
+    if (prompt === 0 && completion === 0) return "Free"
+    return "$" + (prompt * 1e6).toFixed(2) + " in · $" + (completion * 1e6).toFixed(2) + " out /M"
+  }
+
   function parseOpenRouterModels(raw) {
     try {
       var parsed = JSON.parse(raw)
@@ -754,6 +767,7 @@ Panel {
                   width: parent.width
                   modelId: modelData.id
                   modelName: modelData.name
+                  priceText: root.openRouterPriceText(modelData)
                   selected: modelData.id === root.openRouterSelectedModelId
                   onPicked: root.selectOpenRouterModel(modelData.id, modelData.name)
                 }
@@ -1099,6 +1113,7 @@ Panel {
     id: orModelRow
     property string modelId: ""
     property string modelName: ""
+    property string priceText: ""
     property bool selected: false
     signal picked()
 
@@ -1120,6 +1135,17 @@ Panel {
       elide: Text.ElideRight
       anchors.left: parent.left
       anchors.leftMargin: Style.space(8)
+      anchors.right: orModelPrice.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      id: orModelPrice
+      text: orModelRow.priceText
+      color: orModelRow.priceText === "Free" ? root.foreground : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
       anchors.right: parent.right
       anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
